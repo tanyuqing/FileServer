@@ -15,7 +15,7 @@ public class Program
     /// <summary>
     /// 资源根目录
     /// </summary>
-    private static string fileRootPath = @"D:\UnityAssetsRootDir";
+    private static string fileRootPath = @"E:\UnityAssetsRootPath";
 
     /// <summary>
     /// 请求网站icon
@@ -61,13 +61,14 @@ public class Program
             Console.WriteLine($"文件服务器已启动！\n\n文件根目录：{fileRootPath}。\n你也可以通过appsetting.json重新指定");
             Console.WriteLine($"\n你可以通以下地址进行文件访问：\n远程：{URLIP} \n本机：{URL}\n");
             Console.WriteLine($"\n文件上传地址示例：\n{URLIP}upload?type=(dddcz)&user=(tanyuiqng)&platform=(android)&version=(1.0)\n()标记的位置替换为实际使用信息，必填且不要括号\n\n");
+
             while (true)
             {
                 var contest = await httpListener.GetContextAsync();
                 var request = contest.Request;
                 var response = contest.Response;
 
-                Console.WriteLine($"收到{request.HttpMethod}请求：{request.Url}");
+                Console.WriteLine($"\n收到{request.HttpMethod}请求：{request.Url}");
 
                 if (request.HttpMethod == "GET")
                 {
@@ -76,6 +77,14 @@ public class Program
                 else if (request.HttpMethod == "POST")
                 {
                     HandlePostRequest(request, response);
+                }
+                else if (request.HttpMethod == "HEAD")
+                {
+                    HandleHeadRequest(request, response);
+                }
+                else
+                {
+                    HandleUnsupportedMethod(request, response);
                 }
             }
         }
@@ -95,8 +104,10 @@ public class Program
     /// <summary>
     /// 处理Get请求
     /// </summary>
-    private static void HandleGetRequest(HttpListenerRequest request, HttpListenerResponse response)
+    private static async Task HandleGetRequest(HttpListenerRequest request, HttpListenerResponse response)
     {
+        Console.WriteLine($"HandleGetRequest triggered at {DateTime.Now}: {request.HttpMethod} {request.Url}");
+
         string relativePath = request.Url.AbsolutePath.TrimStart('/');
         string localPath = Path.Combine(fileRootPath, relativePath.Replace('/', Path.DirectorySeparatorChar));
 
@@ -104,7 +115,8 @@ public class Program
         {
             response.StatusCode = (int)HttpStatusCode.OK;
             byte[] respBytes = Encoding.UTF8.GetBytes("no favicon");
-            response.OutputStream.Write(respBytes, 0, respBytes.Length);
+            await response.OutputStream.WriteAsync(respBytes, 0, respBytes.Length);
+            response.OutputStream.Close();
             return;
         }
 
@@ -120,7 +132,7 @@ public class Program
 
             response.ContentType = "text/html;charset=utf-8";
             response.ContentLength64 = buffer.Length;
-            response.OutputStream.Write(buffer, 0, buffer.Length);
+            await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
             response.OutputStream.Close();
         }
         //是文件就返回文件内容
@@ -133,13 +145,14 @@ public class Program
                 {
                     byte[] buffer = new byte[64 * 1024]; // 64KB
                     int bytesRead;
-                    while ((bytesRead = fs.Read(buffer, 0, buffer.Length)) > 0)
+                    while ((bytesRead = await fs.ReadAsync(buffer, 0, buffer.Length)) > 0)
                     {
-                        response.OutputStream.Write(buffer, 0, bytesRead);
-                        response.OutputStream.Flush();
+                        await response.OutputStream.WriteAsync(buffer, 0, bytesRead);
                     }
                 }
+                response.OutputStream.Flush();
                 response.OutputStream.Close();
+                Console.WriteLine($"文件传输过结束");
             }
             catch (HttpListenerException ex)
             {
@@ -158,7 +171,7 @@ public class Program
             // 返回404
             response.StatusCode = (int)HttpStatusCode.NotFound;
             byte[] errorBytes = Encoding.UTF8.GetBytes("File or directory not found");
-            response.OutputStream.Write(errorBytes, 0, errorBytes.Length);
+            await response.OutputStream.WriteAsync(errorBytes, 0, errorBytes.Length);
             response.OutputStream.Close();
         }
     }
@@ -241,7 +254,7 @@ public class Program
     /// <summary>
     /// 处理Post请求
     /// </summary>
-    private static async void HandlePostRequest(HttpListenerRequest req, HttpListenerResponse resp)
+    private static async Task HandlePostRequest(HttpListenerRequest req, HttpListenerResponse resp)
     {
         if (!req.HasEntityBody)
         {
@@ -288,7 +301,7 @@ public class Program
             using (Stream stream = req.InputStream)
             using (MemoryStream memoryStream = new MemoryStream())
             {
-                stream.CopyTo(memoryStream);
+                await stream.CopyToAsync(memoryStream);
 
                 byte[] content = memoryStream.ToArray();
 
@@ -504,6 +517,26 @@ public class Program
     }
     #endregion
 
+    #region 处理Head请求
+    private static void HandleHeadRequest(HttpListenerRequest request, HttpListenerResponse response)
+    {
+        string relativePath = request.Url.AbsolutePath.TrimStart('/');
+        string localPath = Path.Combine(fileRootPath, relativePath.Replace('/', Path.DirectorySeparatorChar));
+
+        if (File.Exists(localPath))
+        {
+            response.ContentType = GetContentType(localPath);
+            response.ContentLength64 = new FileInfo(localPath).Length;
+            response.StatusCode = (int)HttpStatusCode.OK;
+        }
+        else
+        {
+            response.StatusCode = (int)HttpStatusCode.NotFound;
+        }
+        response.OutputStream.Close();
+    }
+    #endregion
+
     /// <summary>
     /// 获取本机Ip地址
     /// </summary>
@@ -518,6 +551,18 @@ public class Program
             }
         }
         throw new Exception("No network adapters with an IPv4 address in the system!");
+    }
+
+    /// <summary>
+    /// 处理非GET和POST请求
+    /// </summary>
+    private static async Task HandleUnsupportedMethod(HttpListenerRequest request, HttpListenerResponse response)
+    {
+        response.StatusCode = (int)HttpStatusCode.MethodNotAllowed;
+        response.StatusDescription = "Method Not Allowed";
+        byte[] buffer = Encoding.UTF8.GetBytes("Method Not Allowed");
+        await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
+        response.OutputStream.Close();
     }
 }
 
