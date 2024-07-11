@@ -1,4 +1,5 @@
 ﻿using Microsoft.Extensions.Configuration;
+using System.IO.Compression;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -60,7 +61,7 @@ public class Program
 
             Console.WriteLine($"文件服务器已启动！\n\n文件根目录：{fileRootPath}。\n你也可以通过appsetting.json重新指定");
             Console.WriteLine($"\n你可以通以下地址进行文件访问：\n远程：{URLIP} \n本机：{URL}\n");
-            Console.WriteLine($"\n文件上传地址示例：\n{URLIP}upload?type=(dddcz)&user=(tanyuiqng)&platform=(android)&version=(1.0)\n()标记的位置替换为实际使用信息，必填且不要括号\n\n");
+            Console.WriteLine($"\n文件上传地址示例：\n{URLIP}upload?platform=(android)\n\n");
 
             while (true)
             {
@@ -270,7 +271,8 @@ public class Program
             return;
         }
 
-        var output = resp.OutputStream;
+        // Set read timeout for request stream
+        //req.InputStream.ReadTimeout = 10 * 60 * 1000; // 10 minutes
 
         //上传文件请求
         if (req.Url.AbsolutePath.Equals(ACTION_UPLOAD))
@@ -283,44 +285,58 @@ public class Program
                 Console.WriteLine($"客户端数据类型，Client data content type:{req.ContentType}");
             }
 
-            var type = req.QueryString["type"];
-            var user = req.QueryString["user"];
-            var platform = req.QueryString["platform"];
-            var version = req.QueryString["version"];
+            var platform = req.QueryString["platform"]?.Trim();
+            var form = req.QueryString["form"]?.Trim();
 
-            //文件保存目录
-            var savePath = Path.Combine(fileRootPath, type, user, platform, version);
-
-            //如果路径不存在，则创建
-            if (Directory.Exists(savePath) == false)
+            if (string.IsNullOrEmpty(platform))
             {
-                Directory.CreateDirectory(savePath);
+                //给予返回
+                var bufferTmp = Encoding.UTF8.GetBytes($"url中{nameof(platform)}内容为空，请检查");
+                resp.ContentLength64 = bufferTmp.Length;
+                await resp.OutputStream.WriteAsync(bufferTmp, 0, bufferTmp.Length);
+                return;
             }
 
+            //文件保存目录
+            var savePath = Path.Combine(fileRootPath, platform);
+            //如果form存在，则目录中带上form
+            if (string.IsNullOrEmpty(form) == false)
+            {
+                savePath = Path.Combine(fileRootPath, platform, form);
+            }
+
+            //如果目标目录不为空，则清除
+            if (Directory.Exists(savePath))
+            {
+                DirectoryInfo dir = new(savePath);
+                dir.Delete(true);
+            }
+            //创建目录
+            Directory.CreateDirectory(savePath);
+            Console.WriteLine($"创建目录：{savePath}");
+
             // Read the request body as a byte array
+
+            //var str = new StreamReader(req.InputStream).ReadToEnd();
             using (Stream stream = req.InputStream)
             using (MemoryStream memoryStream = new MemoryStream())
             {
                 await stream.CopyToAsync(memoryStream);
-
                 byte[] content = memoryStream.ToArray();
 
-                // Parse the multipart content
-                byte[] boundaryBytes = Encoding.UTF8.GetBytes(boundary);
-                int boundaryLength = boundaryBytes.Length;
-
-                List<int> boundaryPositions = FindBoundaryPositions(content, boundaryBytes);
+                List<int> boundaryPositions = FindBoundaryPositions(content, boundary);
 
                 for (int i = 0; i < boundaryPositions.Count - 1; i++)
                 {
-                    int start = boundaryPositions[i] + boundaryLength;
+                    int start = boundaryPositions[i] + boundary.Length + 2; // +2 to skip CRLF
                     int end = boundaryPositions[i + 1] - 2; // subtract the CRLF before the boundary
                     if (start >= end) continue;
 
                     byte[] partBytes = new byte[end - start];
                     Array.Copy(content, start, partBytes, 0, partBytes.Length);
 
-                    ProcessPart(partBytes, savePath);
+                    // Process each partBytes here, e.g., save to file
+                    ProcessPartAsync(partBytes, savePath);
                 }
             }
 
@@ -329,13 +345,16 @@ public class Program
             resp.ContentLength64 = buffer.Length;
 
             //向响应中写入返回
-            await output.WriteAsync(buffer, 0, buffer.Length);
+            resp.OutputStream.Write(buffer, 0, buffer.Length);
         }
         else
         {
-            await output.WriteAsync(new byte[] { }, 0, 0);
+            resp.ContentLength64 = 0;
+            resp.OutputStream.Write([], 0, 0);
         }
-        output.Close();
+        resp.OutputStream.Flush();
+        resp.OutputStream.Close();
+        Console.WriteLine("上传请求已结束");
     }
 
     /// <summary>
@@ -343,18 +362,13 @@ public class Program
     /// </summary>
     static string GetBoundary(string contentType)
     {
-        // Extract the boundary from the Content-Type header
-        string boundary = null;
-        string[] elements = contentType.Split(';');
-        foreach (string element in elements)
+        var boundaryStartIndex = contentType.IndexOf("boundary=", StringComparison.InvariantCultureIgnoreCase);
+        if (boundaryStartIndex == -1)
         {
-            if (element.Trim().StartsWith("boundary=", StringComparison.OrdinalIgnoreCase))
-            {
-                boundary = "--" + element.Trim().Substring("boundary=".Length);
-                break;
-            }
+            throw new ArgumentException("Boundary not found in Content-Type header");
         }
-        return boundary;
+        var boundary = contentType.Substring(boundaryStartIndex + 9); // 9 is the length of "boundary="
+        return boundary.Trim('"'); // Remove surrounding quotes if present
     }
 
     /// <summary>
@@ -377,21 +391,30 @@ public class Program
         {
             fileName = HttpUtility.UrlDecode(fileName.Substring("UTF-8''".Length));
         }
+        else if (fileName.StartsWith("=?utf-8?B?"))
+        {
+            // Decode the Base64 encoded filename
+            var base64EncodedFilename = fileName.Substring(10, fileName.Length - 12);
+            byte[] base64EncodedBytes = Convert.FromBase64String(base64EncodedFilename);
+            fileName = Encoding.UTF8.GetString(base64EncodedBytes);
+        }
         return fileName;
     }
 
     /// <summary>
     /// 查找多个文件数据的分界标识
     /// </summary>
-    static List<int> FindBoundaryPositions(byte[] content, byte[] boundary)
+    static List<int> FindBoundaryPositions(byte[] content, string boundary)
     {
+        var boundaryBytes = Encoding.UTF8.GetBytes("--" + boundary);
+
         List<int> positions = new List<int>();
-        for (int i = 0; i <= content.Length - boundary.Length; i++)
+        for (int i = 0; i <= content.Length - boundaryBytes.Length; i++)
         {
             bool match = true;
-            for (int j = 0; j < boundary.Length; j++)
+            for (int j = 0; j < boundaryBytes.Length; j++)
             {
-                if (content[i + j] != boundary[j])
+                if (content[i + j] != boundaryBytes[j])
                 {
                     match = false;
                     break;
@@ -408,7 +431,7 @@ public class Program
     /// <summary>
     /// 分文件读取数据并保存
     /// </summary>
-    static void ProcessPart(byte[] part, string savePath)
+    static void ProcessPartAsync(byte[] part, string savePath)
     {
         int headerEndIndex = FindHeaderEndIndex(part);
         if (headerEndIndex == -1)
@@ -460,14 +483,19 @@ public class Program
                 var fullFileName = Path.Combine(savePath, fileName);
                 Console.WriteLine($"准备保存文件:{fullFileName}");
 
-                //如果已存在，则删除
-                if (File.Exists(fullFileName))
-                {
-                    File.Delete(fullFileName);
-                }
 
                 File.WriteAllBytes(fullFileName, fileData);
-                Console.WriteLine($"文件 '{fileName}' 上传成功，位置：{fullFileName}");
+                Console.WriteLine($"文件 {fileName} 上传成功，位置：{fullFileName}");
+
+                //如果是zip文件，则解压
+                if (fileName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                {
+                    ZipFile.ExtractToDirectory(fullFileName, savePath);
+                    Console.WriteLine($"文件 {fileName} 已解压到 {savePath}");
+
+                    File.Delete(fullFileName);
+                    Console.WriteLine($"文件 {fullFileName} 已删除！");
+                }
             }
         }
         else
