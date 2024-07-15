@@ -8,6 +8,7 @@
 远程：http://x.x.x.x:8888/（x.x.x.x为你电脑的ipv4地址，程序启动后控制台也会显示出来）
 本机：http://localhost:8888/
 
+点击最小化隐藏控制台窗口；点击右下角托盘的“打开”菜单再次显示窗口，点击右下角托盘的“退出”菜单退出程序；
 
 文件上传URL示例：
 http://x.x.x.x:8888/upload?type=(dddcz)&user=(tanyuiqng)&platform=(android)&version=(1.0)

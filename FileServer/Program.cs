@@ -1,18 +1,20 @@
 ﻿using Microsoft.Extensions.Configuration;
+using System.Diagnostics;
 using System.IO.Compression;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Web;
 
-public class Program
+public partial class Program
 {
     /// <summary>
     /// 服务地址
     /// </summary>
+    private static int PORT = 8888;
     private const string IP = "localhost";
-    private static string URL = $"http://{IP}:8888/";
-    private static string URLIP = $"http://{GetLocalIPAddress()}:8888/";
+    private static string URL => $"http://{IP}:{PORT}/";
+    private static string URLIP => $"http://{GetLocalIPAddress()}:{PORT}/";
     /// <summary>
     /// 资源根目录
     /// </summary>
@@ -27,14 +29,55 @@ public class Program
     /// </summary>
     private const string ACTION_UPLOAD = "/upload";
 
+    /// <summary>
+    /// http服务器监听
+    /// </summary>
+    private static HttpListener httpListener;
+
     static async Task Main(string[] args)
+    {
+        try
+        {
+            //窗口最小化相关逻辑
+            MinimizeInit();
+
+            //服务器初始化
+            InitFileServer();
+
+            //启动服务器
+            var serverTask = StartHttpServer();
+
+            //防止主线程退出 
+            Application.Run();
+
+            await serverTask;
+        }
+        catch (Exception e)
+        {
+            Debug.WriteLine($"Unhandled exception: {e.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 服务器初始化
+    /// </summary>
+    private static void InitFileServer()
     {
         //从配置文件appsettings.json中读取文件服务器的指定目录
         IConfigurationRoot config = new ConfigurationBuilder().AddJsonFile("appsettings.json", optional: false, reloadOnChange: true).Build();
+
+        //读取文件目录
         var cfgPath = config.GetSection("AppConfig")["DirectoryPath"];
         if (cfgPath != null)
         {
             fileRootPath = cfgPath;
+        }
+
+        //读取商品
+        var cfgPort = config.GetSection("AppConfig")["Port"];
+        if (cfgPort != null)
+        {
+            PORT = int.Parse(cfgPort);
         }
 
         //如果路径不存在，则创建
@@ -42,9 +85,6 @@ public class Program
         {
             Directory.CreateDirectory(fileRootPath);
         }
-
-        //启动服务器`
-        await StartHttpServer();
     }
 
     /// <summary>
@@ -52,54 +92,74 @@ public class Program
     /// </summary>
     private static async Task StartHttpServer()
     {
+        httpListener = new HttpListener();
+        httpListener.Prefixes.Add(URLIP);
+        httpListener.Prefixes.Add(URL);
+        httpListener.Start();
+
+        Console.WriteLine($"文件服务器已启动！\n\n文件根目录：{fileRootPath}。\n你也可以通过appsetting.json重新指定");
+        Console.WriteLine($"\n你可以通以下地址进行文件访问：\n远程：{URLIP} \n本机：{URL}\n\n端口也可以通过配置文件指定");
+        Console.WriteLine($"\n文件上传地址示例：\n{URLIP}upload?platform=(android)\n\n");
+
+        while (true)
+        {
+            await HandleRequestAsync();
+        }
+    }
+
+    /// <summary>
+    /// 处理接收到的请求
+    /// </summary>
+    private static async Task HandleRequestAsync()
+    {
         try
         {
-            HttpListener httpListener = new HttpListener();
-            httpListener.Prefixes.Add(URLIP);
-            httpListener.Prefixes.Add(URL);
-            httpListener.Start();
+            var contest = await httpListener.GetContextAsync();
+            var request = contest.Request;
+            var response = contest.Response;
 
-            Console.WriteLine($"文件服务器已启动！\n\n文件根目录：{fileRootPath}。\n你也可以通过appsetting.json重新指定");
-            Console.WriteLine($"\n你可以通以下地址进行文件访问：\n远程：{URLIP} \n本机：{URL}\n");
-            Console.WriteLine($"\n文件上传地址示例：\n{URLIP}upload?platform=(android)\n\n");
+            Console.WriteLine($"\n收到{request.HttpMethod}请求：{request.Url}");
 
-            while (true)
+            if (request.HttpMethod == "GET")
             {
-                var contest = await httpListener.GetContextAsync();
-                var request = contest.Request;
-                var response = contest.Response;
-
-                Console.WriteLine($"\n收到{request.HttpMethod}请求：{request.Url}");
-
-                if (request.HttpMethod == "GET")
-                {
-                    HandleGetRequest(request, response);
-                }
-                else if (request.HttpMethod == "POST")
-                {
-                    HandlePostRequest(request, response);
-                }
-                else if (request.HttpMethod == "HEAD")
-                {
-                    HandleHeadRequest(request, response);
-                }
-                else
-                {
-                    HandleUnsupportedMethod(request, response);
-                }
+                HandleGetRequest(request, response);
+            }
+            else if (request.HttpMethod == "POST")
+            {
+                HandlePostRequest(request, response);
+            }
+            else if (request.HttpMethod == "HEAD")
+            {
+                HandleHeadRequest(request, response);
+            }
+            else
+            {
+                HandleUnsupportedMethod(request, response);
+            }
+        }
+        catch (HttpListenerException hlex)
+        {
+            Console.WriteLine($"HttpListenerException: {hlex.Message}");
+            if (hlex.ErrorCode == 995) // 995 means operation aborted
+            {
+                //break; // exit the loop if the listener is closed
             }
         }
         catch (Exception ex)
         {
             // 记录错误到控制台，可以改为记录到日志文件或其他日志管理工具
-            Console.WriteLine($"{DateTime.Now}: {ex.Message}");
+            Debug.WriteLine($"{DateTime.Now}: {ex.Message}");
             if (ex.InnerException != null)
             {
-                Console.WriteLine($"Inner exception: {ex.InnerException.Message}");
+                Debug.WriteLine($"Inner exception: {ex.InnerException.Message}");
             }
         }
+        finally
+        {
+            Console.WriteLine("request has been handled.");
+        }
+        return;
     }
-
 
     #region 处理Get请求
     /// <summary>
@@ -153,7 +213,7 @@ public class Program
                 }
                 response.OutputStream.Flush();
                 response.OutputStream.Close();
-                Console.WriteLine($"文件传输过结束");
+                Console.WriteLine($"文件传输结束");
             }
             catch (HttpListenerException ex)
             {

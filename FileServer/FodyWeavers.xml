@@ -1,0 +1,12 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Weavers xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="FodyWeavers.xsd">
+  <Costura>
+    <!-- Optional configuration -->
+	  <!--
+    <IncludeAssemblies>Microsoft.Extensions.Configuration.Json.dll</IncludeAssemblies>
+    <IncludeAssemblies>System.Drawing.Common.dll</IncludeAssemblies>
+    <IncludeAssemblies>Microsoft.Windows.Compatibility.dll</IncludeAssemblies>
+	  -->
+	  <CreateTemporaryAssemblies>true</CreateTemporaryAssemblies>
+  </Costura>
+</Weavers>
